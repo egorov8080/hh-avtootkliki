@@ -1,0 +1,28 @@
+Python Backend Developer / AI Engineer
+
+Опыт: 3+ года коммерческой разработки
+
+Стек:
+- Python 3.10+, FastAPI, Django, Flask
+- PostgreSQL, Redis, MongoDB
+- Docker, Docker Compose, CI/CD
+- Telegram Bot API, aiogram
+- AI/ML: LangChain, Anthropic Claude, OpenAI
+- Playwright, Selenium, парсинг
+- Celery, asyncio, RabbitMQ
+- Git, Linux, Nginx
+
+Ключевые проекты:
+- SaaS-платформа автоматизации на FastAPI + PostgreSQL
+- Telegram-боты с AI-интеграцией (Claude, GPT)
+- Системы парсинга и мониторинга данных
+- REST API для мобильных приложений
+
+Сильные стороны:
+- Опыт работы с AI API и промпт-инжинирингом
+- Автоматизация бизнес-процессов
+- Чистый, тестируемый код
+- Удалённая работа: высокая автономность и продуктивность
+
+Образование: Высшее техническое
+Локация: Москва (готов к удалённой работе по всей России)
