@@ -199,6 +199,9 @@ class HHPlaywright:
                 submit_btn = await page.query_selector('button[data-qa*="response-submit"]')
             if not submit_btn:
                 submit_btn = await page.query_selector('.vacancy-response-popup-actions button[type="submit"]')
+            if not submit_btn:
+                # On the new response page — "Откликнуться" button at the bottom
+                submit_btn = await page.query_selector('button:has-text("Откликнуться")')
 
             if submit_btn:
                 await submit_btn.click()
@@ -238,51 +241,74 @@ class HHPlaywright:
     async def _fill_response_form(self, page: Page, cover_letter: str, vacancy_url: str):
         """Fill cover letter, employer questions (test task), and resume picker."""
         from app.ai.claude import claude_ai
+        from app.config import settings as cfg
 
-        # 1. Find employer question(s) — they appear as labels/textareas on response page
-        question_blocks = await page.query_selector_all('[data-qa="task-body"]')
-        if not question_blocks:
-            question_blocks = await page.query_selector_all('.vacancy-response-question')
+        # 1. Find ALL textareas with "Писать тут" placeholder — those are question answers
+        #    For each one extract the question text from the closest preceding label/text.
+        question_textareas = await page.query_selector_all('textarea[placeholder*="исать тут"]')
+        # Fallback to old hh format
+        if not question_textareas:
+            blocks = await page.query_selector_all('[data-qa="task-body"]')
+            question_textareas = []
+            for b in blocks:
+                ta = await b.query_selector('textarea')
+                if ta:
+                    question_textareas.append(ta)
 
-        for block in question_blocks:
+        for ta in question_textareas:
             try:
-                # Extract question text
-                q_text_el = await block.query_selector('[data-qa="task-question"]')
-                if not q_text_el:
-                    q_text_el = block
-                question = (await q_text_el.inner_text()).strip()
-
-                # Find answer textarea inside this block
-                answer_area = await block.query_selector('textarea')
-                if not answer_area:
+                # Extract question text — closest preceding label or paragraph
+                question = await ta.evaluate(
+                    """el => {
+                        // Walk up looking for previous siblings/labels
+                        let cur = el;
+                        for (let i = 0; i < 6; i++) {
+                            cur = cur.parentElement;
+                            if (!cur) break;
+                            // Look at children before the textarea
+                            const labels = cur.querySelectorAll('label, p, div, span, h1, h2, h3, h4');
+                            for (const node of labels) {
+                                if (node.contains(el)) continue;
+                                const text = (node.innerText || '').trim();
+                                if (text && text.length > 5 && text.length < 500 && !text.includes('Писать тут')) {
+                                    return text;
+                                }
+                            }
+                        }
+                        return '';
+                    }"""
+                )
+                if not question:
+                    log.warning("hh_question_text_empty")
                     continue
 
-                # Generate answer via Claude
                 log.info("hh_question_found", question=question[:120])
-                from app.config import settings as cfg
+
                 user_msg = (
                     f"Вопрос работодателя в отклике на вакансию:\n{question}\n\n"
                     f"Контекст вакансии: {vacancy_url}\n\n"
-                    "Дай чёткий короткий ответ от первого лица. "
+                    "Дай чёткий короткий ответ от первого лица (2-4 предложения максимум). "
                     "Используй факты из моего резюме, не выдумывай. "
-                    "Если это тестовое задание — выполни его."
+                    "Если это тестовое задание — выполни его. "
+                    "Если спрашивают про зарплату — укажи от 200 000 руб. "
+                    "Если спрашивают про команду — отвечай исходя из проектов в резюме."
                 )
                 system = (
-                    "Ты — кандидат Илья Егоров, отвечающий на вопрос работодателя при отклике. "
+                    "Ты — кандидат, отвечающий на вопрос работодателя при отклике на вакансию. "
                     "Используй ТОЛЬКО факты из резюме, ничего не выдумывай. "
-                    "НИКОГДА не используй другие имена кроме 'Илья Егоров'.\n\n"
+                    "НЕ представляйся (HR видит имя в резюме).\n\n"
                     f"Профиль кандидата:\n{cfg.resume_text}"
                 )
                 try:
-                    answer_text, _, _ = await claude_ai._call(system, user_msg, max_tokens=800)
+                    answer_text, _, _ = await claude_ai._call(system, user_msg, max_tokens=600)
                     answer_text = answer_text.strip()
                 except Exception as e:
                     log.error("hh_answer_gen_error", error=str(e))
-                    answer_text = "Готов выполнить тестовое задание после уточнения деталей."
+                    answer_text = "Готов обсудить детали на собеседовании."
 
-                await answer_area.fill(answer_text)
-                await page.wait_for_timeout(800)
-                log.info("hh_question_answered", chars=len(answer_text))
+                await ta.fill(answer_text)
+                await page.wait_for_timeout(700)
+                log.info("hh_question_answered", chars=len(answer_text), q=question[:60])
             except Exception as e:
                 log.warning("hh_question_fill_error", error=str(e))
 
@@ -292,6 +318,11 @@ class HHPlaywright:
             add_letter_btn = await page.query_selector('button:has-text("Добавить сопроводительное")')
         if not add_letter_btn:
             add_letter_btn = await page.query_selector('a:has-text("Добавить сопроводительное")')
+        if not add_letter_btn:
+            # On the new response page the link is just "Добавить" next to "Сопроводительное письмо"
+            add_letter_btn = await page.query_selector('a:has-text("Добавить"):right-of(:text("Сопроводительное письмо"))')
+        if not add_letter_btn:
+            add_letter_btn = await page.query_selector('button:has-text("Добавить")')
         if add_letter_btn:
             try:
                 await add_letter_btn.click()
