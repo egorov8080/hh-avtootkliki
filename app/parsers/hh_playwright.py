@@ -662,58 +662,82 @@ class HHPlaywright:
             if count == 0:
                 return 0
 
-            # Click the first card. Don't assume navigation — may be modal.
+            # Click the first card. hh.ru opens chatik widget (overlay), not nav.
             await cards.first.click()
             await page.wait_for_timeout(6000)
             await self._save_debug_screenshot(page, "thanks_step2_after_click")
             log.info("hh_thanks_after_click", url=page.url)
 
-            # Look for chat input with many selectors
+            # Dump all chatik-* data-qa to discover real selectors
+            chatik_info = await page.evaluate(
+                """() => {
+                    const all = document.querySelectorAll('[data-qa*="chatik"], [class*="chatik"]');
+                    const found = new Set();
+                    for (const el of all) {
+                        const dq = el.getAttribute('data-qa');
+                        if (dq) found.add('data-qa:' + dq);
+                        const cls = el.className;
+                        if (typeof cls === 'string') {
+                            for (const c of cls.split(/\\s+/)) {
+                                if (c.includes('chatik')) found.add('class:' + c);
+                            }
+                        }
+                    }
+                    // Also list every textarea / contenteditable on the page
+                    const inputs = [];
+                    for (const el of document.querySelectorAll('textarea, [contenteditable="true"]')) {
+                        inputs.push({
+                            tag: el.tagName,
+                            dq: el.getAttribute('data-qa') || '',
+                            placeholder: el.getAttribute('placeholder') || '',
+                            visible: el.offsetParent !== null,
+                            inChatik: !!el.closest('[data-qa*="chatik"], [class*="chatik"]'),
+                        });
+                    }
+                    return {chatik: Array.from(found).slice(0, 40), inputs: inputs.slice(0, 10)};
+                }"""
+            )
+            log.info("hh_thanks_chatik_dump", info=chatik_info)
+
+            # Look for chat input inside chatik widget first
             input_selectors = [
                 '[data-qa="chatik-new-message-text"]',
+                '[data-qa*="chatik"] textarea',
+                '[data-qa*="chatik"] [contenteditable="true"]',
+                '[class*="chatik"] textarea',
+                '[class*="chatik"] [contenteditable="true"]',
                 'textarea[placeholder*="Сообщение"]',
                 'textarea[placeholder*="сообщение"]',
-                'textarea[name="message"]',
-                'textarea',
-                'div[contenteditable="true"]',
-                '[contenteditable="true"]',
             ]
             chat_input = None
             for sel in input_selectors:
                 try:
                     el = await page.query_selector(sel)
                     if el:
-                        chat_input = el
-                        log.info("hh_thanks_input_found", selector=sel)
-                        break
+                        # ensure visible
+                        visible = await el.is_visible()
+                        if visible:
+                            chat_input = el
+                            log.info("hh_thanks_input_found", selector=sel)
+                            break
                 except Exception:
                     pass
 
             if not chat_input:
                 await self._save_debug_screenshot(page, "thanks_step3_no_input")
-                # Dump DOM around any forms
-                dom_info = await page.evaluate(
-                    """() => {
-                        const inputs = document.querySelectorAll('textarea, [contenteditable]');
-                        return Array.from(inputs).slice(0, 5).map(el => ({
-                            tag: el.tagName,
-                            placeholder: el.getAttribute('placeholder') || '',
-                            name: el.getAttribute('name') || '',
-                            visible: el.offsetParent !== null,
-                        }));
-                    }"""
-                )
-                log.warning("hh_thanks_no_input_dom", dom=dom_info, url=page.url)
+                log.warning("hh_thanks_no_input", url=page.url)
                 return 0
 
             await chat_input.fill("Спасибо за обратную связь! Желаю успехов в подборе кандидата.")
             await page.wait_for_timeout(1500)
             await self._save_debug_screenshot(page, "thanks_step4_filled")
 
-            # Try send
+            # Try send button (inside chatik widget)
             send_selectors = [
                 '[data-qa="chatik-do-send-message"]',
-                'button[type="submit"]',
+                '[data-qa*="chatik"] button[type="submit"]',
+                '[data-qa*="chatik"] button:has-text("Отправить")',
+                '[class*="chatik"] button[type="submit"]',
                 'button:has-text("Отправить")',
             ]
             send_btn = None
