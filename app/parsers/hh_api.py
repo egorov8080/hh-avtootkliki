@@ -38,14 +38,19 @@ def _load_cookies() -> dict[str, str]:
     return cookies
 
 
-def _headers(xsrf: str) -> dict[str, str]:
+def _headers(xsrf: str, accept_html: bool = False) -> dict[str, str]:
+    accept = (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        if accept_html
+        else "application/json, text/javascript, */*; q=0.01"
+    )
     return {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept": accept,
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
         "Origin": "https://hh.ru",
         "Referer": "https://hh.ru/",
@@ -80,17 +85,30 @@ class HHApiClient:
     async def is_logged_in(self) -> bool:
         if not self.reload_cookies():
             return False
-        async with httpx.AsyncClient(cookies=self._cookies, headers=_headers(self._xsrf), timeout=15) as c:
+        # Use HTML accept header for the resumes page
+        async with httpx.AsyncClient(
+            cookies=self._cookies,
+            headers=_headers(self._xsrf, accept_html=True),
+            timeout=15,
+        ) as c:
             try:
                 r = await c.get("https://hh.ru/applicant/resumes", follow_redirects=False)
-                # Login page = redirect to /account/login or status 302
-                if r.status_code in (301, 302):
+                if r.status_code in (301, 302, 303):
                     loc = r.headers.get("location", "")
                     if "/account/login" in loc or "/auth/" in loc:
                         return False
-                if r.status_code == 200 and "/applicant/" in str(r.url):
+                    # Some redirects within /applicant/ are still ok
+                if r.status_code != 200:
+                    return False
+                body = r.text or ""
+                # If we see the user resume page markers — logged in
+                if 'data-qa="resume"' in body or '"resumesList"' in body:
                     return True
-                return False
+                # If body asks for login — not logged in
+                if 'data-qa="account-login"' in body or "Войти на сайт" in body:
+                    return False
+                # Default: if status 200 on /applicant/* without redirect to login — logged in
+                return True
             except Exception as e:
                 log.warning("hh_api_login_check_error", error=str(e))
                 return False
