@@ -200,45 +200,64 @@ class WorkerScheduler:
 
     async def _job_check_login_health(self):
         """Every 30 min verify hh + habr login. If any expired,
-        notify in TG and pause auto_apply for that platform."""
+        notify in TG and pause auto_apply for that platform.
+
+        hh checked via fast httpx hh_api_client (cookies only — не падает
+        как Playwright). Habr через Playwright с retry на crash.
+        """
         try:
-            from app.parsers.hh_playwright import hh_playwright
+            from app.parsers.hh_api import hh_api_client
             from app.parsers.habr_playwright import habr_playwright
 
             issues: list[str] = []
-            if hh_playwright:
-                try:
-                    ok = await hh_playwright.is_logged_in()
-                except Exception:
-                    ok = False
-                if not ok:
-                    issues.append("hh.ru")
-                    log.warning("login_health_hh_expired")
+
+            # 1. HH — через API client (httpx, надёжнее)
+            try:
+                hh_ok = await hh_api_client.is_logged_in()
+            except Exception as e:
+                log.warning("login_health_hh_check_error", error=str(e))
+                hh_ok = False
+            if not hh_ok:
+                issues.append("hh.ru")
+                log.warning("login_health_hh_expired")
+
+            # 2. Habr — Playwright с retry
+            habr_ok = False
             if habr_playwright:
-                try:
-                    ok = await habr_playwright.is_logged_in()
-                except Exception:
-                    ok = False
-                if not ok:
+                for attempt in range(2):
+                    try:
+                        habr_ok = await habr_playwright.is_logged_in()
+                        if habr_ok:
+                            break
+                    except Exception as e:
+                        log.warning("login_health_habr_check_error", attempt=attempt + 1, error=str(e))
+                        habr_ok = False
+                if not habr_ok:
                     issues.append("Хабр Карьера")
                     log.warning("login_health_habr_expired")
 
             if issues:
-                msg = (
-                    "⚠️ <b>Сессия слетела:</b> " + ", ".join(issues) + "\n"
-                    "Авто-отклики приостановлены до перелогина.\n"
-                    "Нужен VNC: попроси «запускай VNC для hh» или «для habr»."
+                vnc_hint = (
+                    "🔐 Нужен ручной перелогин через VNC:\n"
+                    + "\n".join(
+                        f"• <b>{p}</b> — попроси «запускай VNC для {('hh' if 'hh' in p else 'habr')}»"
+                        for p in issues
+                    )
                 )
-                # Notify always (not via _notify_if_allowed) — это критично
+                msg = (
+                    "⚠️ <b>Сессия слетела</b>\n\n"
+                    + "Затронуто: " + ", ".join(f"<b>{p}</b>" for p in issues) + "\n\n"
+                    + vnc_hint + "\n\n"
+                    "Авто-отклики временно приостановлены."
+                )
                 if self.notify:
                     try:
                         await self.notify(msg)
                     except Exception as e:
                         log.error("login_health_notify_error", error=str(e))
-                # Auto-pause auto_apply until manual fix
                 if self.auto_apply:
                     self.set_auto_apply(False)
-                    log.info("auto_apply_disabled_session_expired")
+                    log.info("auto_apply_disabled_session_expired", platforms=issues)
             else:
                 log.info("login_health_ok")
         except Exception as e:
